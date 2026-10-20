@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="伟哥音乐">
+  <defs>
+    <linearGradient id="w" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#ffc089"/>
+      <stop offset="0.45" stop-color="#ff7a18"/>
+      <stop offset="1" stop-color="#e05c00"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff7a18" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#ff7a18" stop-opacity=".15"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底：暖黑圆角盘，边缘一圈极淡描边把轮廓托出来 -->
+  <rect width="64" height="64" rx="15" fill="#0a0908"/>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="none"
+        stroke="#2e2419" stroke-width="1.4"/>
+
+  <!-- 主体 W：粗笔画 + 锐角收笔，重心压得低，显得沉、壮 -->
+  <path d="M16 18 L24 42 L32 26 L40 42 L48 18"
+        fill="none" stroke="url(#w)" stroke-width="9.4"
+        stroke-linecap="square" stroke-linejoin="miter" stroke-miterlimit="2.2"/>
+
+  <!-- 底座刻度线：呼应 hi-fi 面板，也让整体落地更稳 -->
+  <rect x="15" y="49.6" width="34" height="3.2" rx="1.6" fill="url(#glow)"/>
+</svg>

@@ -1,0 +1,473 @@
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 226a20b..301f244 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -34,6 +34,7 @@ set(SOURCES "audio/audio_codec.cc"
+             "protocols/mqtt_protocol.cc"
+             "protocols/websocket_protocol.cc"
+             "mcp_server.cc"
++            "music_http_server.cc"
+             "system_info.cc"
+             "application.cc"
+             "ota.cc"
+@@ -1121,6 +1122,7 @@ idf_component_register(SRCS ${SOURCES}
+                         esp_driver_jpeg
+                         esp_driver_ppa
+                         esp_driver_tsens
++                        esp_http_server
+                         esp_app_format
+                         app_update
+                         spi_flash
+diff --git a/main/application.cc b/main/application.cc
+index 31de205..28d8727 100644
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -1,4 +1,5 @@
+ #include "application.h"
++#include "music_http_server.h"
+ #include "assets.h"
+ #include "assets/lang_config.h"
+ #include "audio_codec.h"
+@@ -288,6 +289,10 @@ void Application::Run() {
+ 
+ void Application::HandleNetworkConnectedEvent() {
+     ESP_LOGI(TAG, "Network connected");
++
++    // 网络可用后开放局域网点播入口（重复调用内部自带幂等判断）
++    MusicHttpServer::GetInstance().Start(8080);
++
+     auto state = GetDeviceState();
+ 
+     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
+@@ -570,6 +575,12 @@ void Application::InitializeProtocol() {
+     protocol_->OnAudioChannelClosed([this, &board]() {
+         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+         Schedule([this]() {
++            // 插播点歌会主动关掉对话通道，此时音乐才刚开始放，
++            // 绝不能把状态打回 idle —— 否则会出现「在响但停不下来」的僵局。
++            if (music_playing_) {
++                ESP_LOGI(TAG, "Audio channel closed while music playing, keep state");
++                return;
++            }
+             auto display = Board::GetInstance().GetDisplay();
+             display->SetChatMessage("system", "");
+             SetDeviceState(kDeviceStateIdle);
+@@ -1098,6 +1109,62 @@ void Application::ConfigureWakeWordForListening() {
+ #endif
+ }
+ 
++bool Application::PlayMusic(const std::string& url) {
++    if (url.empty()) {
++        ESP_LOGW(TAG, "PlayMusic: empty url");
++        return false;
++    }
++
++    // 语音点歌时设备必然停在 listening/speaking（正在播 TTS 回复），
++    // 如果这里要求 idle，用户就永远点不响。放宽到「对话中也能插播」，
++    // 真正的状态收敛放到主线程里做。
++    auto state = GetDeviceState();
++    if (state != kDeviceStateIdle && state != kDeviceStateListening &&
++        state != kDeviceStateSpeaking && state != kDeviceStateNotifying) {
++        ESP_LOGW(TAG, "PlayMusic ignored: state=%d", static_cast<int>(state));
++        return false;
++    }
++
++    // StartNotification 会改设备状态、动显示和音频资源，必须回到主线程执行
++    ESP_LOGI(TAG, "PlayMusic: %s (from state=%d)", url.c_str(), static_cast<int>(state));
++    Schedule([this, audio_url = url]() mutable {
++        auto current = GetDeviceState();
++
++        // 正在放别的歌：先停掉，再按下面的流程重新起播
++        if (current == kDeviceStateNotifying) {
++            StopNotification();
++            current = GetDeviceState();
++        }
++
++        // 仍在对话中：主动结束这一轮。
++        // 状态机只允许 listening/speaking -> idle -> notifying，不能一步跳到 notifying。
++        if (current != kDeviceStateIdle) {
++            if (protocol_ && protocol_->IsAudioChannelOpened()) {
++                protocol_->CloseAudioChannel();
++            }
++            audio_service_.EnableVoiceProcessing(false);
++            if (!SetDeviceState(kDeviceStateIdle)) {
++                ESP_LOGW(TAG, "PlayMusic: cannot fall back to idle");
++                return;
++            }
++            // 等 STATE_CHANGED 处理完，避免和 StartNotification 抢音频资源
++            vTaskDelay(pdMS_TO_TICKS(150));
++        }
++
++        StartNotification(std::move(audio_url), {});
++    });
++    return true;
++}
++
++void Application::StopMusic() {
++    // 只要还有音频在播就停，不完全依赖状态机：
++    // 插播时关掉对话通道会让状态短暂回落，状态和音频可能不同步。
++    if (!notify_player_.IsBusy() && GetDeviceState() != kDeviceStateNotifying) {
++        return;
++    }
++    Schedule([this]() { StopNotification(); });
++}
++
+ void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles) {
+     if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
+         ESP_LOGW(TAG, "Ignoring notify message while device is busy");
+@@ -1141,10 +1208,13 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
+     if (!started) {
+         ESP_LOGE(TAG, "Failed to start notification playback");
+         StopNotification();
++    } else {
++        music_playing_ = true;
+     }
+ }
+ 
+ void Application::StopNotification() {
++    music_playing_ = false;   // 先清标志，允许下面的状态回落到 idle
+     notify_player_.Stop();
+     audio_service_.ResetDecoder();
+     auto& board = Board::GetInstance();
+diff --git a/main/application.h b/main/application.h
+index f2b9a00..d793655 100644
+--- a/main/application.h
++++ b/main/application.h
+@@ -70,6 +70,13 @@ public:
+ 
+     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
+     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
++
++    /**
++     * 播放网络音频（OGG/Opus），供局域网接口与 MCP 工具调用。
++     * 内部会切到主线程并复用通知播放通道，设备忙时返回 false。
++     */
++    bool PlayMusic(const std::string& url);
++    void StopMusic();
+     
+     /**
+      * Request state transition
+@@ -142,6 +149,10 @@ private:
+     AudioService audio_service_;
+     NotifyPlayer notify_player_;
+     uint32_t notification_playback_id_ = 0;
++    // 音乐（通知通道）是否正在播放。
++    // 对话流程关闭音频通道时会无条件把状态切回 idle，插播点歌正好会触发这条路径，
++    // 结果就是「音乐还在响，但状态已是 idle」，StopMusic 于是认为没在播而拒绝停止。
++    bool music_playing_ = false;
+     std::unique_ptr<Ota> ota_;
+ 
+     std::function<void(const std::string&)> mcp_broadcast_callback_;
+diff --git a/main/mcp_server.cc b/main/mcp_server.cc
+index 171f24b..9a4c6b9 100644
+--- a/main/mcp_server.cc
++++ b/main/mcp_server.cc
+@@ -59,6 +59,34 @@ void McpServer::AddCommonTools() {
+                 return true;
+             });
+ 
++    // 在线音频播放：设备本身只解 Opus/OGG，所以这里要求外边给的就是 OGG/Opus 流。
++    // 局域网/云端只要能产出一条设备可达的音频地址，就可以通过这个工具直接播。
++    AddTool("self.music.play",
++            "Play an online audio stream on the device. "
++            "The url MUST be an OGG/Opus stream that the device itself can reach (typically a "
++            "LAN address such as http://192.168.x.x:8090/media/xxx.ogg). "
++            "Do not pass MP3/AAC/m4a links — the device can only decode OGG/Opus. "
++            "Use this tool when the user asks to play a song and you already have a playable url.",
++            PropertyList({Property("url", kPropertyTypeString),
++                          Property("title", kPropertyTypeString, "")}),
++            [](const PropertyList& properties) -> ReturnValue {
++                auto url = properties["url"].value<std::string>();
++                auto title = properties["title"].value<std::string>();
++                if (!title.empty()) {
++                    ESP_LOGI(TAG, "MCP 请求播放: %s (%s)", title.c_str(), url.c_str());
++                }
++                if (!Application::GetInstance().PlayMusic(url)) {
++                    return std::string("设备正忙，稍后再试");
++                }
++                return true;
++            });
++
++    AddTool("self.music.stop", "Stop the music currently playing on the device.",
++            PropertyList(), [](const PropertyList& properties) -> ReturnValue {
++                Application::GetInstance().StopMusic();
++                return true;
++            });
++
+     auto backlight = board.GetBacklight();
+     if (backlight) {
+         AddTool("self.screen.set_brightness", "Set the brightness of the screen.",
+diff --git a/main/music_http_server.cc b/main/music_http_server.cc
+new file mode 100644
+index 0000000..48c5179
+--- /dev/null
++++ b/main/music_http_server.cc
+@@ -0,0 +1,228 @@
++#include "music_http_server.h"
++
++#include <cstring>
++#include <string>
++
++#include <esp_http_server.h>
++#include <esp_log.h>
++#include <esp_netif.h>
++
++#include "application.h"
++
++#define TAG "MusicHttp"
++
++namespace {
++
++httpd_handle_t g_server = nullptr;
++
++/** 把 %XX 还原成字节，'+' 还原成空格 */
++std::string UrlDecode(const char* src, size_t len) {
++    std::string out;
++    out.reserve(len);
++    for (size_t i = 0; i < len; ++i) {
++        char c = src[i];
++        if (c == '+') {
++            out.push_back(' ');
++        } else if (c == '%' && i + 2 < len) {
++            auto hex = [](char h) -> int {
++                if (h >= '0' && h <= '9') return h - '0';
++                if (h >= 'a' && h <= 'f') return h - 'a' + 10;
++                if (h >= 'A' && h <= 'F') return h - 'A' + 10;
++                return -1;
++            };
++            int hi = hex(src[i + 1]);
++            int lo = hex(src[i + 2]);
++            if (hi >= 0 && lo >= 0) {
++                out.push_back(static_cast<char>((hi << 4) | lo));
++                i += 2;
++            } else {
++                out.push_back(c);
++            }
++        } else {
++            out.push_back(c);
++        }
++    }
++    return out;
++}
++
++/** 取查询参数，取不到返回空串 */
++std::string GetQueryValue(httpd_req_t* req, const char* key) {
++    char buf[512];
++    size_t len = httpd_req_get_url_query_len(req) + 1;
++    if (len <= 1) {
++        return {};
++    }
++    if (len > sizeof(buf)) {
++        len = sizeof(buf);
++    }
++    if (httpd_req_get_url_query_str(req, buf, len) != ESP_OK) {
++        return {};
++    }
++    char value[768];
++    if (httpd_query_key_value(buf, key, value, sizeof(value)) != ESP_OK) {
++        return {};
++    }
++    return UrlDecode(value, strlen(value));
++}
++
++void SendJson(httpd_req_t* req, const std::string& body, const char* status = "200 OK") {
++    httpd_resp_set_status(req, status);
++    httpd_resp_set_type(req, "application/json; charset=utf-8");
++    httpd_resp_send(req, body.c_str(), body.size());
++}
++
++const char* StateName() {
++    switch (Application::GetInstance().GetDeviceState()) {
++        case kDeviceStateIdle:
++            return "idle";
++        case kDeviceStateConnecting:
++            return "connecting";
++        case kDeviceStateListening:
++            return "listening";
++        case kDeviceStateSpeaking:
++            return "speaking";
++        case kDeviceStateNotifying:
++            return "notifying";
++        case kDeviceStateActivating:
++            return "activating";
++        default:
++            return "other";
++    }
++}
++
++esp_err_t HandlePlay(httpd_req_t* req) {
++    auto url = GetQueryValue(req, "url");
++    if (url.empty()) {
++        SendJson(req, "{\"ok\":false,\"error\":\"missing url\"}", "400 Bad Request");
++        return ESP_OK;
++    }
++    if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
++        SendJson(req, "{\"ok\":false,\"error\":\"url must be http(s)\"}", "400 Bad Request");
++        return ESP_OK;
++    }
++
++    // 注意：这里拿到的是 httpd 任务，PlayMusic 内部会 Schedule 到主线程
++    bool started = Application::GetInstance().PlayMusic(url);
++    if (!started) {
++        SendJson(req, "{\"ok\":false,\"error\":\"device busy\"}", "409 Conflict");
++        return ESP_OK;
++    }
++    std::string body = "{\"ok\":true,\"url\":\"" + url + "\"}";
++    SendJson(req, body);
++    return ESP_OK;
++}
++
++esp_err_t HandleStop(httpd_req_t* req) {
++    Application::GetInstance().StopMusic();
++    SendJson(req, "{\"ok\":true}");
++    return ESP_OK;
++}
++
++esp_err_t HandleStatus(httpd_req_t* req) {
++    std::string body = std::string("{\"ok\":true,\"state\":\"") + StateName() + "\"}";
++    SendJson(req, body);
++    return ESP_OK;
++}
++
++esp_err_t HandleRoot(httpd_req_t* req) {
++    static const char* page = R"HTML(<!DOCTYPE html>
++<html lang="zh-CN"><head><meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>小智点播</title>
++<style>
++body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:24px;background:#f6f7f9;color:#1a1a1a}
++h1{font-size:18px;margin:0 0 16px}
++input,button{width:100%;box-sizing:border-box;padding:12px;font-size:15px;border-radius:10px;border:1px solid #d5d7db;margin-bottom:12px}
++button{background:#1f6feb;color:#fff;border:none;font-weight:500}
++#log{white-space:pre-wrap;font-size:13px;color:#555;margin-top:12px}
++</style></head><body>
++<h1>小智点播（粘贴 OGG/Opus 地址）</h1>
++<input id="u" placeholder="http://192.168.x.x:8090/media/xxx.ogg">
++<button onclick="play()">播放</button>
++<button onclick="fetch('/stop').then(r=>r.text()).then(t=>log(t))" style="background:#8b949e">停止</button>
++<div id="log"></div>
++<script>
++function log(t){document.getElementById('log').textContent=t}
++function play(){
++  const u=document.getElementById('u').value.trim();
++  if(!u){log('请先填地址');return}
++  log('发送中…');
++  fetch('/play?url='+encodeURIComponent(u)).then(r=>r.text()).then(log).catch(e=>log('失败: '+e));
++}
++</script></body></html>)HTML";
++
++    httpd_resp_set_type(req, "text/html; charset=utf-8");
++    httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
++    return ESP_OK;
++}
++
++std::string LocalIp() {
++    esp_netif_ip_info_t ip_info{};
++    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
++    if (netif == nullptr || esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) {
++        return {};
++    }
++    char buf[16];
++    snprintf(buf, sizeof(buf), IPSTR, IP2STR(&ip_info.ip));
++    return buf;
++}
++
++}  // namespace
++
++MusicHttpServer& MusicHttpServer::GetInstance() {
++    static MusicHttpServer instance;
++    return instance;
++}
++
++void MusicHttpServer::Start(int port) {
++    if (started_) {
++        return;
++    }
++
++    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
++    config.server_port = port;
++    config.ctrl_port = port + 1;
++    config.lru_purge_enable = true;
++    config.max_uri_handlers = 8;
++    // 默认栈 4KB 对带 JSON 拼装的处理器偏紧
++    config.stack_size = 6144;
++
++    httpd_handle_t server = nullptr;
++    esp_err_t err = httpd_start(&server, &config);
++    if (err != ESP_OK) {
++        ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
++        return;
++    }
++
++    httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = HandleRoot, .user_ctx = nullptr};
++    httpd_uri_t play = {.uri = "/play", .method = HTTP_GET, .handler = HandlePlay, .user_ctx = nullptr};
++    httpd_uri_t stop = {.uri = "/stop", .method = HTTP_GET, .handler = HandleStop, .user_ctx = nullptr};
++    httpd_uri_t status = {.uri = "/status", .method = HTTP_GET, .handler = HandleStatus, .user_ctx = nullptr};
++    httpd_register_uri_handler(server, &root);
++    httpd_register_uri_handler(server, &play);
++    httpd_register_uri_handler(server, &stop);
++    httpd_register_uri_handler(server, &status);
++
++    g_server = server;
++    server_ = server;
++    started_ = true;
++
++    auto ip = LocalIp();
++    if (!ip.empty()) {
++        ESP_LOGI(TAG, "点播页: http://%s:%d/", ip.c_str(), port);
++    } else {
++        ESP_LOGI(TAG, "已启动，端口 %d（IP 尚未就绪）", port);
++    }
++}
++
++void MusicHttpServer::Stop() {
++    if (!started_) {
++        return;
++    }
++    if (g_server != nullptr) {
++        httpd_stop(g_server);
++        g_server = nullptr;
++    }
++    server_ = nullptr;
++    started_ = false;
++}
+diff --git a/main/music_http_server.h b/main/music_http_server.h
+new file mode 100644
+index 0000000..cd2b965
+--- /dev/null
++++ b/main/music_http_server.h
+@@ -0,0 +1,34 @@
++#ifndef MUSIC_HTTP_SERVER_H
++#define MUSIC_HTTP_SERVER_H
++
++#include <string>
++
++/**
++ * 局域网点播接口。
++ *
++ * 设备已经具备「从 HTTP 拉 OGG/Opus 并播放」的能力（notify_player），
++ * 这里只是给它开一个局域网入口，方便手机/电脑直接把音频地址推给它：
++ *
++ *   GET /play?url=<urlencoded ogg 地址>&title=<可选>
++ *   GET /stop
++ *   GET /status
++ *   GET /          简易点播页
++ *
++ * 只在网络就绪后启动，端口 8080（可用 Kconfig 改）。
++ */
++class MusicHttpServer {
++public:
++    static MusicHttpServer& GetInstance();
++
++    void Start(int port);
++    void Stop();
++    bool IsRunning() const { return started_; }
++
++private:
++    MusicHttpServer() = default;
++
++    bool started_ = false;
++    void* server_ = nullptr;  // httpd_handle_t
++};
++
++#endif  // MUSIC_HTTP_SERVER_H

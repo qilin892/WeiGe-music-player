@@ -1,0 +1,29 @@
+{
+  "name": "weige-music",
+  "version": "1.0.0",
+  "private": true,
+  "description": "伟哥音乐 · 本地播放器（打包成单文件 exe）",
+  "main": "server.js",
+  "bin": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "node build-exe.js"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.23.0"
+  },
+  "pkg": {
+    "assets": [
+      "public/**/*",
+      "sources/*.js",
+      "assets/**/*"
+    ],
+    "targets": [
+      "node22-win-x64"
+    ],
+    "outputPath": "dist"
+  }
+}

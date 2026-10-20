@@ -1,0 +1,11 @@
+# 统一使用 LF：Windows 上 core.autocrlf 默认可能把文本转成 CRLF，
+# 而 firmware/patches 下的补丁一旦变成 CRLF，git am 会直接失败。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.ogg binary
+*.exe binary
