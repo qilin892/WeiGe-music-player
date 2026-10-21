@@ -12,6 +12,17 @@ server/assets/ffmpeg.exe
 server/device.json
 server/mcp.json
 
+# Android
+android/build/
+android/app/build/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/keystore/
+android/keystore.properties
+android/*.apk
+android/*.aab
+
 # 日志与临时文件
 *.log
 .DS_Store

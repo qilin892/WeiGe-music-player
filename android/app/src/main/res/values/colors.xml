@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#0A0908</color>
+    <!-- 启动窗口底色：跟默认的白天模式一致，避免冷启动闪黑屏 -->
+    <color name="weige_bg">#F5F0E6</color>
+</resources>

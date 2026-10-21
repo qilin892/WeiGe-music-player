@@ -9,3 +9,7 @@
 *.ico binary
 *.ogg binary
 *.exe binary
+
+# Windows 批处理必须是 CRLF，否则 gradlew.bat 跑不起来
+*.bat text eol=crlf
+*.cmd text eol=crlf

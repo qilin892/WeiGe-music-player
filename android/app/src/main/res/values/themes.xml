@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.WeigeMusic" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/weige_bg</item>
+        <item name="android:statusBarColor">@color/weige_bg</item>
+        <item name="android:navigationBarColor">@color/weige_bg</item>
+        <!-- 默认白天：状态栏用深色图标。夜间模式由 MainActivity 动态改回来 -->
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

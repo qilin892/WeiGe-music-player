@@ -1,0 +1,22 @@
+# 构建产物
+build/
+app/build/
+*.ap_
+*.apk
+*.aab
+
+# Gradle
+.gradle/
+.kotlin/
+
+# 本机配置（含 SDK 路径）
+local.properties
+
+# IDE
+.idea/
+*.iml
+captures/
+.DS_Store
+
+# 日志
+*.log

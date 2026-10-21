@@ -240,6 +240,21 @@ ffmpeg -fflags nobuffer -probesize 65536 -analyzeduration 200000 \
 
 ---
 
+## Android 版
+
+手机端的独立播放器：不依赖电脑，也不含小智联动。
+
+- 搜歌、播放、歌词、收藏、**自建歌单**、上一首/下一首、后台播放与通知栏控制
+- 音源和 PC 端同源：内置 **QuickJS** 跑洛雪 JS 脚本，启动时按 24 小时周期自动更新
+- 手机网络访问不到 GitHub 时，用 APK 里预置的脚本快照兜底，不会开不了张
+- 深色 / 浅色两套主题，默认浅色
+
+安装：从 [Releases](../../releases/latest) 下载 `WeigeMusic-x.y.z-release.apk`，需要 Android 8.0+。
+
+> 正式包的签名和调试包不同。之前装过 `-debug` 版本的话，要先卸载才能装（收藏和歌单会丢）。
+
+源码在 [`android/`](android/)，构建说明见 [android/README.md](android/README.md)。
+
 ## 目录结构
 
 ```
@@ -256,6 +271,12 @@ ffmpeg -fflags nobuffer -probesize 65536 -analyzeduration 200000 \
 │   ├── sources/             音源脚本（洛雪格式）
 │   ├── public/              前端页面（单文件）
 │   └── build-exe.js         打包脚本
+├── android/                 Android 客户端（Kotlin + Compose）
+│   ├── app/src/main/java/com/weige/music/
+│   │   ├── script/          QuickJS 引擎 + 音源脚本仓库
+│   │   ├── play/            队列播放（ResolvingDataSource 按需解析）
+│   │   └── ui/              Compose 界面
+│   └── app/src/main/assets/sources/   内置音源脚本快照
 ├── firmware/patches/        ESP32 固件补丁
 └── docs/screenshots/        README 用图
 ```
