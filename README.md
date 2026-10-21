@@ -4,10 +4,6 @@
 
 **一个能搜歌、能放歌、还能指挥 ESP32 小智音箱的本地音乐播放器**
 
-<p>
-  <img src="docs/screenshots/player.png" width="880" alt="主界面：搜索、播放、实时电平">
-</p>
-
 [![Release](https://img.shields.io/badge/release-v1.2.2-ff7a18)](../../releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-444)](#安装与启动)
 [![License](https://img.shields.io/badge/license-Apache--2.0-444)](LICENSE)
@@ -16,15 +12,9 @@
 
 ---
 
-## 这是什么
-
-一个跑在自己电脑上的音乐播放器。搜歌、播放、歌词、存到本地，都在浏览器里完成。
-
-它还有后半段能力：把正在听的歌**推给客厅那台 ESP32 小智音箱**。配好之后，对着音箱说一句「播放晴天」，它就会去你的库里找歌放——曲库和音源都在你自己手上。
-
-本篇先讲 Web 端怎么用，再讲音箱联动怎么配。
-
 ## 界面
+
+**桌面端（Web）**
 
 <table>
 <tr>
@@ -37,7 +27,25 @@
 </tr>
 </table>
 
+**Android**
+
+<p align="center">
+  <img src="docs/screenshots/android-discovery.jpg" width="32%" alt="发现页">
+  <img src="docs/screenshots/android-player.jpg" width="32%" alt="播放页">
+  <img src="docs/screenshots/android-search.jpg" width="32%" alt="搜索页">
+</p>
+
+<p align="center"><sub>发现歌单 · 播放与歌词 · 搜索与最近播放</sub></p>
+
 ---
+
+## 这是什么
+
+一个跑在自己电脑上的音乐播放器。搜歌、播放、歌词、存到本地，都在浏览器里完成。
+
+它还有后半段能力：把正在听的歌**推给客厅那台 ESP32 小智音箱**。配好之后，对着音箱说一句「播放晴天」，它就会去你的库里找歌放——曲库和音源都在你自己手上。
+
+本篇先讲 Web 端怎么用，再讲音箱联动怎么配。
 
 ## Web 端
 
@@ -242,13 +250,7 @@ ffmpeg -fflags nobuffer -probesize 65536 -analyzeduration 200000 \
 
 ## Android 版
 
-手机端的独立播放器：不依赖电脑，也不含小智联动。
-
-<p align="center">
-  <img src="docs/screenshots/android-discovery.jpg" width="30%" alt="发现页">
-  <img src="docs/screenshots/android-player.jpg" width="30%" alt="播放页">
-  <img src="docs/screenshots/android-search.jpg" width="30%" alt="搜索页">
-</p>
+手机端的独立播放器：不依赖电脑，也不含小智联动。界面见上方截图。
 
 **发现** —— 推荐歌单加 7 类标签（专区 / 主题 / 心情 / 场景 / 年代 / 曲风流派 / 语言），
 两列瀑布流、触底自动翻页；点进去整单入队，可以直接「播放全部」。
