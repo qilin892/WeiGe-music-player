@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -46,7 +47,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.weige.music.model.OnlinePlaylist
 import com.weige.music.model.Playlist
+import com.weige.music.model.PlaylistTag
+import com.weige.music.model.PlaylistTagGroup
 import com.weige.music.model.Song
 
 @Composable
@@ -71,16 +75,51 @@ fun SearchScreen(
     onCreatePlaylist: () -> Unit,
     onDeletePlaylist: (String) -> Unit,
     onRemoveFromPlaylist: (String, Song) -> Unit,
+    // ---- 发现（在线歌单） ----
+    tagGroups: List<PlaylistTagGroup>,
+    selectedGroup: Int,
+    selectedTag: PlaylistTag?,
+    onlinePlaylists: List<OnlinePlaylist>,
+    onlineLoading: Boolean,
+    onlineHasMore: Boolean,
+    onlineError: String?,
+    onSelectGroup: (Int) -> Unit,
+    onSelectTag: (PlaylistTag) -> Unit,
+    onOpenOnline: (OnlinePlaylist) -> Unit,
+    onLoadMoreOnline: () -> Unit,
+    onRetryOnline: () -> Unit,
+    onEnsureDiscovery: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var tab by remember { mutableIntStateOf(0) }
+
+    // 首次切到「发现」时才去打接口，不拖慢启动
+    LaunchedEffect(tab) {
+        if (tab == 0) onEnsureDiscovery()
+    }
 
     Column(modifier.fillMaxSize()) {
         Header(dark = dark, onToggleTheme = onToggleTheme)
         Tabs(tab) { tab = it }
 
         when (tab) {
-            0 -> Column(Modifier.fillMaxSize()) {
+            0 -> DiscoveryScreen(
+                tagGroups = tagGroups,
+                selectedGroup = selectedGroup,
+                selectedTag = selectedTag,
+                playlists = onlinePlaylists,
+                loading = onlineLoading,
+                hasMore = onlineHasMore,
+                error = onlineError,
+                onSelectGroup = onSelectGroup,
+                onSelectTag = onSelectTag,
+                onOpen = onOpenOnline,
+                onLoadMore = onLoadMoreOnline,
+                onRetry = onRetryOnline,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            1 -> Column(Modifier.fillMaxSize()) {
                 SearchField(query, onQueryChange, onSearch)
                 Spacer(Modifier.height(6.dp))
 
@@ -131,7 +170,7 @@ fun SearchScreen(
                 }
             }
 
-            1 -> if (favorites.isEmpty()) {
+            2 -> if (favorites.isEmpty()) {
                 Hint("还没有收藏，在列表里点心形试试", Modifier.fillMaxSize().padding(top = 70.dp))
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
@@ -207,7 +246,7 @@ private fun Header(dark: Boolean, onToggleTheme: () -> Unit) {
 /** 搜索 / 收藏 两个页签，下划线指示当前项，和整体的硬件面板风格一致 */
 @Composable
 private fun Tabs(current: Int, onSelect: (Int) -> Unit) {
-    val labels = listOf("搜索", "收藏", "歌单")
+    val labels = listOf("发现", "搜索", "收藏", "歌单")
     // start 8 + 内部 10 = 18，和下方列表的文字左边界对齐
     Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 18.dp, bottom = 6.dp)) {
         labels.forEachIndexed { i, label ->

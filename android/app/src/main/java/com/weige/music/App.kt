@@ -43,6 +43,7 @@ import com.weige.music.ui.CoverArt
 import com.weige.music.ui.InputDialog
 import com.weige.music.ui.Palette
 import com.weige.music.ui.PlayerScreen
+import com.weige.music.ui.PlaylistDetailScreen
 import com.weige.music.ui.SearchScreen
 import com.weige.music.ui.ThinProgress
 import kotlinx.coroutines.delay
@@ -50,9 +51,13 @@ import kotlinx.coroutines.delay
 @Composable
 fun AppRoot(vm: AppViewModel) {
     val state by vm.playState.collectAsStateWithLifecycle()
+    // 取流要跑 JS 脚本，几秒；buffering 覆盖了这整段（resolving 只是刚点下去那一下）
+    val waiting = vm.resolving || state.buffering
+    val openList = vm.openedOnlineList
     var showCreatePlaylist by remember { mutableStateOf(false) }
 
     BackHandler(enabled = vm.showPlayer) { vm.showPlayer = false }
+    BackHandler(enabled = !vm.showPlayer && openList != null) { vm.closeOnlineList() }
 
     Box(
         Modifier
@@ -73,7 +78,33 @@ fun AppRoot(vm: AppViewModel) {
                     onPrevious = { vm.previous() },
                     onNext = { vm.next() },
                     onAddToPlaylist = { state.song?.let { vm.pickSongForPlaylist(it) } },
+                    waiting = waiting,
+                    favorite = state.song?.let { vm.isFavorite(it) } == true,
+                    onToggleFavorite = { state.song?.let { vm.toggleFavorite(it) } },
+                    lyricLoading = vm.lyricLoading,
                 )
+            } else if (openList != null) {
+                PlaylistDetailScreen(
+                    playlist = openList,
+                    songs = vm.onlineSongs,
+                    loading = vm.onlineSongsLoading,
+                    currentId = state.song?.id,
+                    isFavorite = { vm.isFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavorite(it) },
+                    onBack = { vm.closeOnlineList() },
+                    onPlayAll = { vm.onlineSongs.firstOrNull()?.let { vm.play(it, vm.onlineSongs) } },
+                    onPlay = { vm.play(it, vm.onlineSongs) },
+                    modifier = Modifier.weight(1f),
+                )
+                if (state.song != null) {
+                    MiniPlayer(
+                        state = state,
+                        onClick = { vm.showPlayer = true },
+                        onToggle = { vm.toggle() },
+                        onNext = { vm.next() },
+                        waiting = waiting,
+                    )
+                }
             } else {
                 SearchScreen(
                     query = vm.query,
@@ -96,6 +127,19 @@ fun AppRoot(vm: AppViewModel) {
                     onCreatePlaylist = { showCreatePlaylist = true },
                     onDeletePlaylist = { vm.deletePlaylist(it) },
                     onRemoveFromPlaylist = { pid, song -> vm.removeFromPlaylist(pid, song.id) },
+                    tagGroups = vm.tagGroups,
+                    selectedGroup = vm.selectedGroup,
+                    selectedTag = vm.selectedTag,
+                    onlinePlaylists = vm.onlinePlaylists,
+                    onlineLoading = vm.onlineLoading,
+                    onlineHasMore = vm.onlineHasMore,
+                    onlineError = vm.onlineError,
+                    onSelectGroup = { vm.selectGroup(it) },
+                    onSelectTag = { vm.selectTag(it) },
+                    onOpenOnline = { vm.openOnlineList(it) },
+                    onLoadMoreOnline = { vm.loadMoreOnline() },
+                    onRetryOnline = { vm.reloadOnline() },
+                    onEnsureDiscovery = { vm.ensureDiscovery() },
                     modifier = Modifier.weight(1f),
                 )
                 if (state.song != null) {
@@ -104,6 +148,7 @@ fun AppRoot(vm: AppViewModel) {
                         onClick = { vm.showPlayer = true },
                         onToggle = { vm.toggle() },
                         onNext = { vm.next() },
+                        waiting = waiting,
                     )
                 }
             }
@@ -138,8 +183,8 @@ fun AppRoot(vm: AppViewModel) {
             )
         }
 
-        // 取流要走 JS 脚本，可能要等几秒，给个明确的进行中提示
-        if (vm.resolving) {
+        // 列表页的等待提示。播放页有封面遮罩和按钮转圈，这里不重复
+        if (waiting && !vm.showPlayer) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -155,7 +200,13 @@ fun AppRoot(vm: AppViewModel) {
                         modifier = Modifier.size(14.dp),
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("正在解析音源…", color = Palette.Text, fontSize = 12.5.sp)
+                    Text(
+                        text = state.song?.title?.let { "正在解析音源 · $it" } ?: "正在解析音源…",
+                        color = Palette.Text,
+                        fontSize = 12.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -168,6 +219,7 @@ private fun MiniPlayer(
     onClick: () -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
+    waiting: Boolean = false,
 ) {
     val duration = state.durationMs.coerceAtLeast(1L)
     val progress = (state.positionMs.toFloat() / duration).coerceIn(0f, 1f)
@@ -194,9 +246,9 @@ private fun MiniPlayer(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = state.song?.artist.orEmpty(),
+                    text = if (waiting) "正在解析音源…" else state.song?.artist.orEmpty(),
                     fontSize = 11.sp,
-                    color = Palette.Text2,
+                    color = if (waiting) Palette.Accent else Palette.Text2,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -213,16 +265,24 @@ private fun MiniPlayer(
                 modifier = Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .background(Palette.Accent)
-                    .clickable { onToggle() },
+                    .background(if (waiting) Palette.Accent.copy(alpha = 0.5f) else Palette.Accent)
+                    .clickable(enabled = !waiting) { onToggle() },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    imageVector = if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = null,
-                    tint = Palette.OnAccent,
-                    modifier = Modifier.size(22.dp),
-                )
+                if (waiting) {
+                    CircularProgressIndicator(
+                        color = Palette.OnAccent,
+                        strokeWidth = 1.8.dp,
+                        modifier = Modifier.size(17.dp),
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        tint = Palette.OnAccent,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
             }
         }
     }

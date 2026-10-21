@@ -20,10 +20,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
@@ -62,6 +65,10 @@ fun PlayerScreen(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onAddToPlaylist: () -> Unit,
+    waiting: Boolean = false,
+    favorite: Boolean = false,
+    onToggleFavorite: () -> Unit = {},
+    lyricLoading: Boolean = false,
 ) {
     val song = state.song
 
@@ -83,21 +90,55 @@ fun PlayerScreen(
                 Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "收起", tint = Palette.Text2)
             }
             Text(
-                "正在播放",
+                text = if (waiting) "正在解析音源" else "正在播放",
                 fontSize = 11.sp,
                 letterSpacing = 1.6.sp,
-                color = Palette.Text3,
+                color = if (waiting) Palette.Accent else Palette.Text3,
                 modifier = Modifier.weight(1f),
             )
+            // 收藏当前歌曲。空心/实心 + 强调色区分状态
+            IconButton(onClick = onToggleFavorite, modifier = Modifier.size(38.dp)) {
+                Icon(
+                    imageVector = if (favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    contentDescription = if (favorite) "取消收藏" else "收藏",
+                    tint = if (favorite) Palette.Accent else Palette.Text2,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
             AddToPlaylistButton(onClick = onAddToPlaylist)
             QualityChips(state.quality, onQuality)
         }
 
         Spacer(Modifier.height(6.dp))
 
-        // 封面
+        // 封面。解析音源时盖一层遮罩加转圈 —— 这是全屏里最显眼的等待标识
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            CoverArt(song = song, size = 236.dp, radius = 14.dp)
+            Box {
+                CoverArt(song = song, size = 236.dp, radius = 14.dp, hd = true)
+                if (waiting) {
+                    Column(
+                        modifier = Modifier
+                            .size(236.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color.Black.copy(alpha = 0.46f)),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        CircularProgressIndicator(
+                            color = Palette.Accent,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(34.dp),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "正在解析音源",
+                            fontSize = 12.sp,
+                            color = Color.White,
+                            letterSpacing = 0.6.sp,
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(Modifier.height(14.dp))
@@ -155,16 +196,25 @@ fun PlayerScreen(
                 modifier = Modifier
                     .size(58.dp)
                     .clip(CircleShape)
-                    .background(Palette.Accent)
-                    .clickable { onToggle() },
+                    .background(if (waiting) Palette.Accent.copy(alpha = 0.5f) else Palette.Accent)
+                    .clickable(enabled = !waiting) { onToggle() },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    imageVector = if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = if (state.playing) "暂停" else "播放",
-                    tint = Palette.OnAccent,
-                    modifier = Modifier.size(30.dp),
-                )
+                if (waiting) {
+                    // 还没取到地址，播放键点了没意义；原位换成转圈，避免「点了没反应」的错觉
+                    CircularProgressIndicator(
+                        color = Palette.OnAccent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(24.dp),
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = if (state.playing) "暂停" else "播放",
+                        tint = Palette.OnAccent,
+                        modifier = Modifier.size(30.dp),
+                    )
+                }
             }
             Spacer(Modifier.width(22.dp))
             IconButton(onClick = onNext, modifier = Modifier.size(52.dp)) {
@@ -180,7 +230,7 @@ fun PlayerScreen(
         Spacer(Modifier.height(10.dp))
 
         // 歌词
-        LyricPane(lyric, lyricIndex, Modifier.weight(1f))
+        LyricPane(lyric, lyricIndex, loading = lyricLoading, modifier = Modifier.weight(1f))
     }
 }
 
@@ -239,10 +289,31 @@ private fun Progress(state: PlayState, onSeek: (Long) -> Unit) {
 }
 
 @Composable
-private fun LyricPane(lines: List<LyricLine>, current: Int, modifier: Modifier = Modifier) {
+private fun LyricPane(
+    lines: List<LyricLine>,
+    current: Int,
+    loading: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
     if (lines.isEmpty()) {
-        Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Text("暂无歌词", fontSize = 12.sp, color = Palette.Text3)
+        Row(
+            modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (loading) {
+                CircularProgressIndicator(
+                    color = Palette.Text3,
+                    strokeWidth = 1.4.dp,
+                    modifier = Modifier.size(12.dp),
+                )
+                Spacer(Modifier.width(7.dp))
+            }
+            Text(
+                text = if (loading) "歌词加载中…" else "暂无歌词",
+                fontSize = 12.sp,
+                color = Palette.Text3,
+            )
         }
         return
     }

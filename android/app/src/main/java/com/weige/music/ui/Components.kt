@@ -4,10 +4,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,6 +30,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
 import com.weige.music.data.KuwoApi
 import com.weige.music.model.Song
 import kotlin.math.PI
@@ -54,28 +59,44 @@ fun WMark(modifier: Modifier = Modifier, color: Color = Palette.Accent) {
     }
 }
 
-/** 封面。没有封面时显示琥珀 W，不留空白方块 */
+/**
+ * 封面。
+ *
+ * W 占位**一直铺在底层**：加载中露出来当占位，加载成功被图片盖住，
+ * 加载失败（404 / 域名不通）也不会留一块空白 —— 这正是之前的毛病：
+ * 只在 url 为空时才画 W，URL 有了但请求挂了就只剩灰块。
+ */
 @Composable
-fun CoverArt(song: Song?, size: Dp, radius: Dp = 8.dp, modifier: Modifier = Modifier) {
+fun CoverArt(
+    song: Song?,
+    size: Dp,
+    radius: Dp = 8.dp,
+    modifier: Modifier = Modifier,
+    hd: Boolean = false,
+) {
     val shape = RoundedCornerShape(radius)
+    val url = song?.let { KuwoApi.coverUrl(it, if (hd) 800 else 500) }.orEmpty()
+    var failed by remember(url) { mutableStateOf(false) }
+
     Box(
         modifier = modifier
             .size(size)
             .clip(shape)
             .background(Palette.Panel2)
     ) {
-        val url = song?.let { KuwoApi.coverUrl(it) }.orEmpty()
-        if (url.isNotEmpty()) {
+        WMark(
+            modifier = Modifier.fillMaxSize().padding(size * 0.22f),
+            color = Palette.AccentDim,
+        )
+        if (url.isNotEmpty() && !failed) {
             AsyncImage(
                 model = url,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            WMark(
-                modifier = Modifier.fillMaxSize(),
-                color = Palette.AccentDim,
+                onState = { state ->
+                    if (state is AsyncImagePainter.State.Error) failed = true
+                },
             )
         }
     }

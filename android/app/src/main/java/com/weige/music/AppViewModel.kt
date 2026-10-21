@@ -7,8 +7,12 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.weige.music.data.KuwoApi
+import com.weige.music.data.PlaylistApi
 import com.weige.music.model.LyricLine
+import com.weige.music.model.OnlinePlaylist
 import com.weige.music.model.Playlist
+import com.weige.music.model.PlaylistTag
+import com.weige.music.model.PlaylistTagGroup
 import com.weige.music.model.Quality
 import com.weige.music.model.Song
 import com.weige.music.play.PlayerController
@@ -17,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -36,6 +41,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var lyricIndex by mutableStateOf(-1)
         private set
+
+    /** 歌词还在路上。酷我缺词时要再多跑一次网易云，空窗期别急着显示「暂无歌词」 */
+    var lyricLoading by mutableStateOf(false)
+        private set
     var showPlayer by mutableStateOf(false)
     var recent by mutableStateOf<List<Song>>(emptyList())
         private set
@@ -47,6 +56,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 正在解析音源（取流可能走 JS 脚本，需要几秒） */
     var resolving by mutableStateOf(false)
         private set
+
+    /**
+     * 是否应该显示「等待音源」的转圈。
+     *
+     * 两个来源：本地的 [resolving]（用户刚点了播放，播放器还没来得及响应）
+     * 和播放器的 buffering（服务端真正在跑脚本取流的那几秒，实际耗时都在这）。
+     * 只看前者会一闪而过 —— 那正是之前「没有任何等待标识」的原因。
+     */
+    val waiting: Boolean
+        get() = resolving || playState.value.buffering
 
     /** 播放队列（点搜索结果或收藏时整列表入队），以及当前位置 */
     var queue by mutableStateOf<List<Song>>(emptyList())
@@ -86,12 +105,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         // 播放器自己切歌（通知栏/耳机键/自动连播）时，同步高亮与歌词
         PlayerController.onSongChanged = { song ->
-            resolving = false
+            clearResolving()
             queueIndex = queue.indexOfFirst { it.id == song.id }.takeIf { it >= 0 } ?: queueIndex
             pushRecent(song)
             loadLyric(song)
         }
-        PlayerController.onEnded = { resolving = false }
+        PlayerController.onEnded = { clearResolving() }
 
         // 启动就在后台把脚本下载好、JS 引擎提前跑起来（洛雪也是这么做的），
         // 这样第一次点歌不用再等 evaluate 那几十 KB 混淆脚本
@@ -148,12 +167,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         playCurrent()
     }
 
+    private var resolvingJob: Job? = null
+
+    /**
+     * 进入「解析中」。真正取流在 PlaybackService 的 ResolvingDataSource 里，
+     * 这里只是让界面立刻有反应；万一播放器没给回状态（服务还没连上等），
+     * 25 秒后自动收回，不至于一直转圈。
+     */
+    private fun markResolving() {
+        resolving = true
+        resolvingJob?.cancel()
+        resolvingJob = viewModelScope.launch {
+            delay(25_000)
+            resolving = false
+        }
+    }
+
+    private fun clearResolving() {
+        resolvingJob?.cancel()
+        resolvingJob = null
+        resolving = false
+    }
+
     private fun playCurrent() {
         val song = queue.getOrNull(queueIndex) ?: return
 
         showPlayer = true
         pushRecent(song)
-        resolving = true
+        markResolving()
 
         // 整个队列交给播放器：地址由 ResolvingDataSource 在要播的那一刻解析
         PlayerController.playQueue(queue, queueIndex, playState.value.quality)
@@ -163,9 +204,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadLyric(song: Song) {
         lyric = emptyList()
         lyricIndex = -1
+        lyricLoading = true
         viewModelScope.launch {
-            val lines = runCatching { KuwoApi.lyric(song) }.getOrDefault(emptyList())
-            if (playState.value.song?.id == song.id) lyric = lines
+            val lines = runCatching {
+                withTimeoutOrNull(12_000) { KuwoApi.lyric(song) }
+            }.getOrNull().orEmpty()
+            if (playState.value.song?.id == song.id) {
+                lyric = lines
+                lyricLoading = false
+            }
         }
     }
 
@@ -173,7 +220,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun playAt(index: Int) {
         if (index !in queue.indices) return
         queueIndex = index
-        resolving = true
+        markResolving()
         PlayerController.playQueue(queue, index, playState.value.quality)
         loadLyric(queue[index])
     }
@@ -183,7 +230,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             message = "已经是最后一首了"
             return
         }
-        resolving = true
+        markResolving()
         PlayerController.next()
     }
 
@@ -194,7 +241,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             message = "已是队列开头，从头播放"
             return
         }
-        resolving = true
+        markResolving()
         PlayerController.previous()
     }
 
@@ -352,6 +399,131 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    /* ------------------------------------------------ 发现：在线歌单 */
+
+    /** 标签分组（专区 / 主题 / 心情 / 场景 / 年代 / 曲风流派） */
+    var tagGroups by mutableStateOf<List<PlaylistTagGroup>>(emptyList())
+        private set
+
+    /** 选中的分组下标；-1 表示「推荐」（不筛标签） */
+    var selectedGroup by mutableStateOf(-1)
+        private set
+
+    var selectedTag by mutableStateOf<PlaylistTag?>(null)
+        private set
+
+    var onlinePlaylists by mutableStateOf<List<OnlinePlaylist>>(emptyList())
+        private set
+    var onlineLoading by mutableStateOf(false)
+        private set
+    var onlineHasMore by mutableStateOf(false)
+        private set
+    var onlineError by mutableStateOf<String?>(null)
+        private set
+
+    private var onlinePage = 1
+    private var onlineJob: Job? = null
+    private var tagsLoading = false
+
+    /** 正在看的在线歌单；非 null 时整屏显示详情页 */
+    var openedOnlineList by mutableStateOf<OnlinePlaylist?>(null)
+        private set
+    var onlineSongs by mutableStateOf<List<Song>>(emptyList())
+        private set
+    var onlineSongsLoading by mutableStateOf(false)
+        private set
+
+    /** 进入「发现」页时调用。标签只拉一次（失败会在下次进来时重试） */
+    fun ensureDiscovery() {
+        if (tagGroups.isEmpty() && !tagsLoading) {
+            tagsLoading = true
+            viewModelScope.launch {
+                val groups = runCatching { PlaylistApi.tags() }.getOrDefault(emptyList())
+                if (groups.isNotEmpty()) tagGroups = groups
+                tagsLoading = false
+            }
+        }
+        if (onlinePlaylists.isEmpty() && !onlineLoading) reloadOnline()
+    }
+
+    /** 切分组。顺手选中该组第一个标签直接出歌单，省得用户再点一次 */
+    fun selectGroup(index: Int) {
+        selectedGroup = index
+        selectedTag = tagGroups.getOrNull(index)?.tags?.firstOrNull()
+        reloadOnline()
+    }
+
+    fun selectTag(tag: PlaylistTag) {
+        selectedTag = tag
+        reloadOnline()
+    }
+
+    fun reloadOnline() {
+        onlineJob?.cancel()
+        onlinePage = 1
+        onlinePlaylists = emptyList()
+        onlineHasMore = false
+        loadOnline(reset = true)
+    }
+
+    fun loadMoreOnline() {
+        if (onlineLoading || !onlineHasMore) return
+        onlinePage += 1
+        loadOnline(reset = false)
+    }
+
+    private fun loadOnline(reset: Boolean) {
+        val tag = selectedTag
+        val page = onlinePage
+        onlineJob = viewModelScope.launch {
+            onlineLoading = true
+            onlineError = null
+
+            val result = runCatching {
+                if (tag == null) PlaylistApi.recommend(page) else PlaylistApi.byTag(tag, page)
+            }.getOrNull()
+
+            if (result == null) {
+                onlineError = "歌单没加载出来，检查下网络"
+                if (!reset) onlinePage = (onlinePage - 1).coerceAtLeast(1)
+                onlineLoading = false
+                return@launch
+            }
+
+            onlinePlaylists = if (reset) result.list else onlinePlaylists + result.list
+            onlineHasMore = result.hasMore
+            onlineLoading = false
+        }
+    }
+
+    fun openOnlineList(p: OnlinePlaylist) {
+        openedOnlineList = p
+        onlineSongs = emptyList()
+        onlineSongsLoading = true
+        viewModelScope.launch {
+            // 把名字一起传进去：专区里有几个空壳歌单（服务端 musicCount=0），
+            // 靠名字找同类歌单顶上，否则点进去是空白
+            val d = runCatching { PlaylistApi.detail(p.id, p.name) }.getOrNull()
+            if (openedOnlineList?.id != p.id) return@launch    // 已经切走了
+
+            onlineSongs = d?.songs.orEmpty()
+            if (d != null && d.info.name.isNotBlank()) {
+                openedOnlineList = d.info
+                if (d.info.id != p.id) {
+                    message = "《${p.name}》暂无内容，已换成《${d.info.name}》"
+                }
+            } else if (onlineSongs.isEmpty()) {
+                message = "这个歌单暂时取不到内容"
+            }
+            onlineSongsLoading = false
+        }
+    }
+
+    fun closeOnlineList() {
+        openedOnlineList = null
+        onlineSongs = emptyList()
     }
 
     fun toggle() = PlayerController.toggle()

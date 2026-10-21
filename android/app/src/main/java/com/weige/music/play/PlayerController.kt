@@ -150,7 +150,8 @@ object PlayerController {
         SongRegistry.putAll(list)
 
         val items = list.map { song ->
-            val cover = KuwoApi.coverUrl(song)
+            // 通知栏/锁屏用大图，800 比 120 那版清爽得多
+            val cover = KuwoApi.coverUrl(song, 800)
             MediaItem.Builder()
                 .setUri("weige://${song.id}?q=${quality.level}")
                 .setMediaId(song.id)

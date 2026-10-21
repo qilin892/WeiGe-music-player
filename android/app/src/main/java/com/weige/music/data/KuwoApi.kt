@@ -91,28 +91,140 @@ object KuwoApi {
         "https://musicapi.haitangw.net/music/kw.php?type=mp3" +
             "&id=${song.id}&level=${quality.level}"
 
-    /** 封面：搜索结果里给的是相对路径，前面补 CDN 域名即可。 */
-    fun coverUrl(song: Song): String =
-        if (song.coverPath.isBlank()) "" else "http://img4.kuwo.cn/star/albumcover/${song.coverPath}"
-
-    /** 歌词。返回按时间升序的行，没有歌词时返回空列表。 */
-    suspend fun lyric(song: Song): List<LyricLine> = withContext(Dispatchers.IO) {
-        try {
-            val body = get("http://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${song.id}")
-            val list = JSONObject(body).optJSONObject("data")?.optJSONArray("lrclist")
-                ?: return@withContext emptyList()
-
-            val lines = ArrayList<LyricLine>(list.length())
-            for (i in 0 until list.length()) {
-                val o = list.optJSONObject(i) ?: continue
-                val t = o.optString("time").toFloatOrNull() ?: continue
-                val text = o.optString("lineLyric").trim()
-                if (text.isEmpty()) continue
-                lines += LyricLine(t, text)
-            }
-            lines.sortedBy { it.time }
-        } catch (e: Exception) {
-            emptyList()
+    /**
+     * 封面。
+     *
+     * 搜索返回的是 `120/22/98/xxx.jpg` 这种短路径，**首段就是尺寸目录**，
+     * 把它换成 500 / 800 就能拿到同图的高清版（实测 120=4.7KB、500=54KB、800=132KB）。
+     * 之前固定拼 120，播放页铺到 236dp 自然是糊的。
+     */
+    fun coverUrl(song: Song, size: Int = 500): String {
+        val p = song.coverPath.trim().trimStart('/')
+        if (p.isEmpty()) return ""
+        val parts = p.split('/')
+        val path = if (parts.size >= 2 && parts[0].all { it.isDigit() }) {
+            (listOf(size.toString()) + parts.subList(1, parts.size)).joinToString("/")
+        } else {
+            p
         }
+        return "https://img4.kuwo.cn/star/albumcover/$path"
+    }
+
+    /**
+     * 歌词。酷我优先（音源和歌词同版本，时间轴最准），
+     * 酷我缺词时走网易云兜底 —— 非独家版权的热门歌在酷我大量没有 LRC。
+     */
+    suspend fun lyric(song: Song): List<LyricLine> = withContext(Dispatchers.IO) {
+        val local = runCatching { kuwoLyric(song) }.getOrDefault(emptyList())
+        if (local.isNotEmpty()) return@withContext local
+        runCatching { neteaseLyric(song) }.getOrDefault(emptyList())
+    }
+
+    private fun kuwoLyric(song: Song): List<LyricLine> {
+        val body = get("http://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${song.id}")
+        val list = JSONObject(body).optJSONObject("data")?.optJSONArray("lrclist")
+            ?: return emptyList()
+
+        val lines = ArrayList<LyricLine>(list.length())
+        for (i in 0 until list.length()) {
+            val o = list.optJSONObject(i) ?: continue
+            val t = o.optString("time").toFloatOrNull() ?: continue
+            val text = o.optString("lineLyric").trim()
+            if (text.isEmpty()) continue
+            lines += LyricLine(t, text)
+        }
+        return lines.sortedBy { it.time }
+    }
+
+    /** 网易云：按「歌名 歌手」找 id，再取 LRC 文本 */
+    private fun neteaseLyric(song: Song): List<LyricLine> {
+        val kw = java.net.URLEncoder.encode("${song.title} ${song.artist}".trim(), "UTF-8")
+        val searchBody = get(
+            "https://music.163.com/api/search/get?s=$kw&type=1&limit=5&offset=0",
+            "https://music.163.com/",
+        )
+        val arr = JSONObject(searchBody).optJSONObject("result")?.optJSONArray("songs")
+            ?: return emptyList()
+
+        val want = normalize(song.title)
+        var id = 0L
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val got = normalize(o.optString("name"))
+            // 名称对不上就跳过，别把同名翻唱的歌词套到原版上
+            if (want.isNotEmpty() && got.isNotEmpty() && !got.contains(want) && !want.contains(got)) continue
+            id = o.optLong("id")
+            if (id > 0) break
+        }
+        if (id <= 0) return emptyList()
+
+        val body = get(
+            "https://music.163.com/api/song/lyric?id=$id&lv=1&kv=1&tv=-1",
+            "https://music.163.com/",
+        )
+        return parseLrc(JSONObject(body).optJSONObject("lrc")?.optString("lyric").orEmpty())
+    }
+
+    /** 去掉括号内容与空白、连字符，只留可比较的主干 */
+    private fun normalize(s: String): String = s
+        .replace(Regex("[（(\\[【].*?[)）\\]】]"), "")
+        .replace(Regex("[\\s\\u3000·・\\-—_/]"), "")
+        .lowercase()
+
+    private val LRC_TAG = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]""")
+
+    /**
+     * LRC 开头常混着制作人员名单，这些不该当歌词滚动。
+     *
+     * 网易云的写法很杂：「作词 : 唐恬」「人声录音 : 利伟明」「词版权管理方：…」
+     * 所以单字用精确匹配、其它用包含匹配，比逐个枚举靠谱。
+     */
+    private val META_EXACT = setOf("词", "曲", "op", "sp")
+
+    private val META_FUZZY = listOf(
+        "作词", "作曲", "编曲", "制作", "监制", "混音", "录音", "母带", "和声", "和音",
+        "统筹", "发行", "出品", "改编", "企划", "文案", "版权", "演奏", "演唱", "配唱",
+        "人声", "美术", "视觉", "鸣谢", "支持", "词曲", "录音室", "设计", "出品人",
+        "后期", "工程", "工作室", "唱片", "传媒", "文化", "音乐总监",
+        // 乐器声部：LRC 末尾常跟一长串演奏者名单
+        "小提琴", "大提琴", "中提琴", "提琴", "钢琴", "长笛", "萨克斯", "二胡", "古筝",
+        "琵琶", "口琴", "手风琴", "小号", "长号", "圆号", "单簧管", "双簧管", "竖琴",
+        "尤克里里", "曼陀林", "吉他", "贝斯", "鼓", "打击乐", "弦乐", "键盘", "合成器",
+        "笛", "箫",
+    )
+
+    private fun isMetaLine(text: String): Boolean {
+        val i = text.indexOfFirst { it == ':' || it == '：' }
+        if (i <= 0 || i > 12) return false
+        val head = text.substring(0, i).trim().lowercase()
+        if (head.isEmpty()) return false
+        if (head in META_EXACT) return true
+        return META_FUZZY.any { head.contains(it) }
+    }
+
+    /** 解析 LRC。一行多时间戳会展开成多行 */
+    private fun parseLrc(raw: String): List<LyricLine> {
+        if (raw.isBlank()) return emptyList()
+        val out = ArrayList<LyricLine>(64)
+        raw.lineSequence().forEach { line ->
+            val tags = LRC_TAG.findAll(line).toList()
+            if (tags.isEmpty()) return@forEach
+            val text = line.substring(tags.last().range.last + 1).trim()
+            if (text.isEmpty()) return@forEach
+            if (isMetaLine(text)) return@forEach
+            for (tag in tags) {
+                val m = tag.groupValues[1].toIntOrNull() ?: continue
+                val s = tag.groupValues[2].toIntOrNull() ?: continue
+                val f = tag.groupValues[3]
+                val ms = when (f.length) {
+                    0 -> 0
+                    1 -> (f.toIntOrNull() ?: 0) * 100
+                    2 -> (f.toIntOrNull() ?: 0) * 10
+                    else -> f.take(3).toIntOrNull() ?: 0
+                }
+                out += LyricLine(m * 60f + s + ms / 1000f, text)
+            }
+        }
+        return out.sortedBy { it.time }
     }
 }

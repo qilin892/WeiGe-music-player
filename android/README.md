@@ -74,17 +74,23 @@ echo "sdk.dir=D:\\android-sdk" > local.properties
 app/src/main/java/com/weige/music/
 ├── MainActivity.kt         入口 + 通知权限 + 音源初始化
 ├── App.kt                  页面组装、迷你播放条
-├── AppViewModel.kt         搜索 / 播放 / 歌词 / 最近播放
-├── data/KuwoApi.kt         搜索、歌词、封面、兜底直链
-├── model/Song.kt           数据模型
+├── AppViewModel.kt         搜索 / 播放 / 歌词 / 收藏 / 歌单 / 发现
+├── data/
+│   ├── KuwoApi.kt          搜索、歌词（酷我优先 + 网易云兜底）、封面
+│   └── PlaylistApi.kt      在线歌单：标签体系、列表分页、详情
+├── model/
+│   ├── Song.kt             歌曲与音质档位
+│   ├── Playlist.kt         本地自建歌单
+│   └── OnlinePlaylist.kt   在线歌单与标签
 ├── script/
 │   ├── UserApiEngine.kt    QuickJS 引擎 + native 桥（request / utils / timeout）
 │   ├── ScriptRepository.kt 脚本清单拉取、缓存、24h 更新
 │   └── MusicSource.kt      取流入口：脚本优先，模板兜底，失败触发刷新
 ├── play/
 │   ├── PlaybackService.kt  MediaSessionService（后台播放 + 通知栏）
-│   └── PlayerController.kt MediaController 封装，对外只暴露 StateFlow
-└── ui/                     Compose 界面（搜索页、播放页、组件）
+│   ├── PlayerController.kt MediaController 封装，对外只暴露 StateFlow
+│   └── SongRegistry.kt     songId → Song，供 ResolvingDataSource 反查
+└── ui/                     Compose 界面（发现 / 搜索 / 播放 / 歌单详情 / 组件）
 ```
 
 ## 已知限制
