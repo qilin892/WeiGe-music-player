@@ -66,17 +66,26 @@ object PlayerController {
             controller = c
             c.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    _state.value = _state.value.copy(playing = isPlaying)
+                    // 已经在出声了就一定不在缓冲，顺手清掉缓冲标记，
+                    // 免得某个回调漏了导致转圈停不下来
+                    _state.value = _state.value.copy(
+                        playing = isPlaying,
+                        buffering = if (isPlaying) false else _state.value.buffering,
+                    )
                 }
 
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                     val id = mediaItem?.mediaId ?: return
                     val song = SongRegistry.get(id) ?: return
+                    // 这里**不能**写死 buffering = true。
+                    // 自动连播下一首时，ExoPlayer 往往已经把它缓冲好了，切过去仍是 READY，
+                    // 不会再回调 onPlaybackStateChanged，写死 true 就没人改回来 ——
+                    // 表现就是歌已经在放了，「正在解析音源」还在转。
                     _state.value = _state.value.copy(
                         song = song,
                         positionMs = 0,
                         durationMs = song.durationSec * 1000L,
-                        buffering = true,
+                        buffering = c.playbackState == Player.STATE_BUFFERING,
                         error = null,
                     )
                     onSongChanged?.invoke(song)
@@ -119,11 +128,18 @@ object PlayerController {
         scope.launch {
             while (ticker) {
                 controller?.let { c ->
-                    if (c.isPlaying || c.playbackState == Player.STATE_BUFFERING) {
+                    val state = c.playbackState
+                    val buffering = state == Player.STATE_BUFFERING
+                    if (c.isPlaying || buffering) {
                         _state.value = _state.value.copy(
                             positionMs = c.currentPosition.coerceAtLeast(0),
                             durationMs = c.duration.coerceAtLeast(0),
                         )
+                    }
+                    // 兜底校正：回调偶尔会丢，卡住的转圈比不转还难受。
+                    // 不一致才写，避免每 200ms 都触发一次重组。
+                    if (_state.value.buffering != buffering) {
+                        _state.value = _state.value.copy(buffering = buffering)
                     }
                 }
                 delay(200)
