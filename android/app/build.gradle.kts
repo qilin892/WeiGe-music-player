@@ -21,8 +21,8 @@ android {
         applicationId = "com.weige.music"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.2.3"
+        versionCode = 15
+        versionName = "1.3.6"
     }
 
     signingConfigs {
@@ -85,6 +85,8 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
+    // MediaStyle 通知样式（自定义播放通知要用）
+    implementation("androidx.media:media:1.7.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

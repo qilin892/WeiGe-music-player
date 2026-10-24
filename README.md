@@ -4,7 +4,7 @@
 
 **一个能搜歌、能放歌、还能指挥 ESP32 小智音箱的本地音乐播放器**
 
-[![Release](https://img.shields.io/badge/release-v1.2.2-ff7a18)](../../releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.3.6-ff7a18)](../../releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-444)](#安装与启动)
 [![License](https://img.shields.io/badge/license-Apache--2.0-444)](LICENSE)
 
@@ -131,6 +131,13 @@ npm run build      # 输出 dist/WeigeMusic.exe
 
 **播放** —— 800×800 高清封面、逐行歌词、VU 电平、上一首 / 下一首、后台播放与通知栏控制。
 歌词优先取酷我（和音源同版本，时间轴最准），酷我缺词的歌自动走网易云兜底。
+支持**顺序 / 单曲循环 / 随机播放**三种模式，选择会记住。
+
+**通知栏与锁屏** —— 显示封面、歌名和**当前这句歌词**，点通知直接回到播放页。
+锁屏上是系统媒体卡片（华为/荣耀的锁屏通知一律折叠成一行，展开样式由系统决定，App 改不了）。
+
+**下载与分享** —— 播放页点下载把当前歌曲存到 `音乐/WeigeMusic/`（Android 10+ 走媒体库，
+文件管理器可见，**不需要任何权限**）；下载完成后再点一下拉起系统分享面板，可以直接发微信。
 
 **搜索 / 收藏 / 自建歌单** —— 搜歌结果整列表入队；收藏与自建歌单都存在本地，重启不丢。
 
@@ -311,6 +318,8 @@ ffmpeg -fflags nobuffer -probesize 65536 -analyzeduration 200000 \
   Live 版和录音室版的时间轴不一致时会差一两秒
 - **个别在线歌单服务端是空的**（专区里的「经典国语」这类），点开会自动换成同名的同类歌单，
   会弹提示说明
+- **Android 锁屏通知是折叠的**：华为/荣耀的锁屏把通知一律收成一行，展开样式由系统决定，
+  App 自己提供的大卡片布局不会被采用（这个没有 API 可改）。下拉通知栏里是完整的媒体控件
 
 ## 声明
 

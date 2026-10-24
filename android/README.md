@@ -77,19 +77,23 @@ app/src/main/java/com/weige/music/
 ├── AppViewModel.kt         搜索 / 播放 / 歌词 / 收藏 / 歌单 / 发现
 ├── data/
 │   ├── KuwoApi.kt          搜索、歌词（酷我优先 + 网易云兜底）、封面
-│   └── PlaylistApi.kt      在线歌单：标签体系、列表分页、详情
+│   ├── PlaylistApi.kt      在线歌单：标签体系、列表分页、详情
+│   └── Downloader.kt       下载到媒体库/私有目录 + 分享
 ├── model/
 │   ├── Song.kt             歌曲与音质档位
 │   ├── Playlist.kt         本地自建歌单
-│   └── OnlinePlaylist.kt   在线歌单与标签
+│   ├── OnlinePlaylist.kt   在线歌单与标签
+│   └── PlayMode.kt         顺序 / 单曲循环 / 随机
 ├── script/
 │   ├── UserApiEngine.kt    QuickJS 引擎 + native 桥（request / utils / timeout）
 │   ├── ScriptRepository.kt 脚本清单拉取、缓存、24h 更新
 │   └── MusicSource.kt      取流入口：脚本优先，模板兜底，失败触发刷新
 ├── play/
-│   ├── PlaybackService.kt  MediaSessionService（后台播放 + 通知栏）
+│   ├── PlaybackService.kt  MediaSessionService（后台播放 + 通知渠道）
 │   ├── PlayerController.kt MediaController 封装，对外只暴露 StateFlow
-│   └── SongRegistry.kt     songId → Song，供 ResolvingDataSource 反查
+│   ├── SongRegistry.kt     songId → Song，供 ResolvingDataSource 反查
+│   ├── NowPlayingState.kt  通知要用的歌词/封面（不经过播放器）
+│   └── WeigeNotificationProvider.kt  自定义播放通知（歌词、封面、按钮）
 └── ui/                     Compose 界面（发现 / 搜索 / 播放 / 歌单详情 / 组件）
 ```
 

@@ -1,7 +1,12 @@
 package com.weige.music.play
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -10,8 +15,10 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.weige.music.R
 import com.weige.music.model.Quality
 import com.weige.music.script.MusicSource
 import kotlinx.coroutines.runBlocking
@@ -69,7 +76,61 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
 
-        mediaSession = MediaSession.Builder(this, player).build()
+        // 点通知栏/锁屏 → 回到 App 的播放页，而不是只把 App 拉到前台
+        val launch = Intent(this, com.weige.music.MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_PLAYER, true)
+        }
+        val sessionActivity = PendingIntent.getActivity(
+            this,
+            0,
+            launch,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        mediaSession = MediaSession.Builder(this, player)
+            .setSessionActivity(sessionActivity)
+            .build()
+
+        // 注意：这个方法在 MediaSessionService 上，不在 MediaSession.Builder 上
+        ensureChannel()
+        val provider = WeigeNotificationProvider(this)
+        setMediaNotificationProvider(provider)
+        // 歌词/封面变化时由这里刷新通知（不经过播放器，所以不会触发重新解析）
+        NowPlayingState.onChanged = { provider.refreshIfNeeded() }
+    }
+
+    /**
+     * 自己建播放通知的 channel。
+     *
+     * 两个坑：
+     *  1. importance 用 LOW 会被系统归进「静默通知」分组（dumpsys 里 groupKey=silent），
+     *     **静默通知在锁屏上直接不显示** —— 这就是锁屏一直空着的原因。改成 DEFAULT，
+     *     再用 setSound(null) 保持不响。
+     *  2. channel 的 lockscreenVisibility 一经创建就改不动（旧渠道实测一直是 -1000
+     *     NO_OVERRIDE），所以换了个新 id 重建，顺便删掉旧的。
+     *
+     * 另外还有一层用户开关：设置 → 通知 → 伟哥音乐 → 锁屏通知，那个关掉的话代码也白搭。
+     */
+    private fun ensureChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(NotificationManager::class.java)
+        runCatching { manager.deleteNotificationChannel("weige_playback") }
+
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.notif_channel_playback),
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = getString(R.string.notif_channel_playback_desc)
+            setShowBadge(false)
+            // 要的是「可见但不打扰」：DEFAULT 拿到锁屏可见性，声音和振动单独关掉
+            setSound(null, null)
+            enableVibration(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        manager.createNotificationChannel(channel)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -82,6 +143,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        NowPlayingState.onChanged = null
         mediaSession?.run {
             player.release()
             release()
@@ -90,8 +152,12 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
-    private companion object {
+    companion object {
         const val TAG = "PlaybackService"
         const val SCHEME = "weige"
+        const val CHANNEL_ID = "weige_playback_v2"
+
+        /** 通知栏点进来时带这个 extra，MainActivity 据此直接打开播放页 */
+        const val EXTRA_OPEN_PLAYER = "openPlayer"
     }
 }

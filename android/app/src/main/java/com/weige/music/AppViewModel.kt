@@ -6,15 +6,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
+import com.weige.music.data.Downloader
 import com.weige.music.data.KuwoApi
 import com.weige.music.data.PlaylistApi
 import com.weige.music.model.LyricLine
 import com.weige.music.model.OnlinePlaylist
+import com.weige.music.model.PlayMode
 import com.weige.music.model.Playlist
 import com.weige.music.model.PlaylistTag
 import com.weige.music.model.PlaylistTagGroup
 import com.weige.music.model.Quality
 import com.weige.music.model.Song
+import com.weige.music.play.NowPlayingState
 import com.weige.music.play.PlayerController
 import com.weige.music.script.MusicSource
 import kotlinx.coroutines.Dispatchers
@@ -97,11 +101,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         getApplication<Application>().getSharedPreferences("weige", 0)
     }
 
+    /** 播放模式，沿用上次退出的选择 */
+    var playMode by mutableStateOf(PlayMode.of(prefs.getString("playMode", null)))
+        private set
+
     init {
         dark = prefs.getBoolean("dark", false)
         recent = loadRecent()
         favorites = loadFavorites()
         playlists = loadPlaylists()
+        PlayerController.setPlayMode(playMode)
 
         // 播放器自己切歌（通知栏/耳机键/自动连播）时，同步高亮与歌词
         PlayerController.onSongChanged = { song ->
@@ -127,7 +136,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     for (i in lyric.indices) {
                         if (lyric[i].time <= t) idx = i else break
                     }
-                    if (idx != lyricIndex) lyricIndex = idx
+                    if (idx != lyricIndex) {
+                        lyricIndex = idx
+                        // 通知栏第二行跟着歌词走；只更新展示状态，不碰播放器
+                        // （以前用 replaceMediaItem 改 metadata，每句都会重解析音源）
+                        val line = lyric.getOrNull(idx)?.text.orEmpty()
+                        if (NowPlayingState.setLyric(line)) {
+                            NowPlayingState.onChanged?.invoke()
+                        }
+                    }
                 }
                 delay(200)
             }
@@ -226,7 +243,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun next() {
-        if (queueIndex >= queue.size - 1) {
+        // 问播放器有没有下一首：随机模式下的顺序和队列下标无关
+        if (!PlayerController.hasNext()) {
             message = "已经是最后一首了"
             return
         }
@@ -235,7 +253,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun previous() {
-        if (queueIndex <= 0) {
+        if (!PlayerController.hasPrevious()) {
             // 已是队列开头：回到开头重播，而不是「点了没反应」
             seekTo(0)
             message = "已是队列开头，从头播放"
@@ -534,6 +552,98 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setQuality(q: Quality) {
         PlayerController.setQuality(q)
         playState.value.song?.let { play(it) }
+    }
+
+    /* ------------------------------------------------ 下载与分享 */
+
+    var downloadingId by mutableStateOf<String?>(null)
+        private set
+    var downloadProgress by mutableStateOf(0)
+        private set
+
+    /** songId → 已保存的文件，uri 可以直接丢给分享 */
+    private val savedDownloads by lazy { loadDownloads() }
+
+    /** 已下载过的 songId，重启后按 prefs 里的记录恢复 */
+    var downloadedIds by mutableStateOf<Set<String>>(loadDownloads().keys.toSet())
+        private set
+
+    fun isDownloaded(song: Song): Boolean = song.id in downloadedIds
+
+    fun download(song: Song) {
+        if (downloadingId != null) {
+            message = "还有一首在下载，稍等一下"
+            return
+        }
+        downloadingId = song.id
+        downloadProgress = 0
+
+        viewModelScope.launch {
+            val result = runCatching {
+                Downloader.save(
+                    context = getApplication(),
+                    song = song,
+                    quality = playState.value.quality,
+                ) { pct ->
+                    // 进度回调在 IO 线程，写 Compose 状态要回主线程
+                    viewModelScope.launch { downloadProgress = pct }
+                }
+            }
+            downloadingId = null
+
+            result.onSuccess { saved ->
+                savedDownloads[song.id] = saved
+                persistDownloads()
+                downloadedIds = savedDownloads.keys.toSet()
+                message = "已保存：${saved.name}"
+            }.onFailure { e ->
+                message = "下载失败：${e.message ?: "未知错误"}"
+            }
+        }
+    }
+
+    fun shareDownload(song: Song) {
+        val saved = savedDownloads[song.id]
+        if (saved == null) {
+            message = "这首还没下载"
+            return
+        }
+        runCatching { Downloader.share(getApplication(), saved, song.title) }
+            .onFailure { message = "分享失败：${it.message ?: "没有能接收的应用"}" }
+    }
+
+    private fun loadDownloads(): MutableMap<String, Downloader.Saved> {
+        val raw = prefs.getString("downloads", null) ?: return mutableMapOf()
+        return try {
+            val root = JSONObject(raw)
+            val map = mutableMapOf<String, Downloader.Saved>()
+            root.keys().forEach { id ->
+                val o = root.optJSONObject(id) ?: return@forEach
+                val uri = o.optString("uri")
+                if (uri.isNotBlank()) {
+                    map[id] = Downloader.Saved(Uri.parse(uri), o.optString("name"))
+                }
+            }
+            map
+        } catch (e: Exception) {
+            mutableMapOf()
+        }
+    }
+
+    private fun persistDownloads() {
+        val root = JSONObject()
+        savedDownloads.forEach { (id, s) ->
+            root.put(id, JSONObject().put("uri", s.uri.toString()).put("name", s.name))
+        }
+        prefs.edit().putString("downloads", root.toString()).apply()
+    }
+
+    /** 顺序 → 单曲 → 随机 → 顺序，点一下换一个 */
+    fun cyclePlayMode() {
+        playMode = playMode.next()
+        PlayerController.setPlayMode(playMode)
+        prefs.edit().putString("playMode", playMode.name).apply()
+        message = playMode.label
     }
 
     fun dismissMessage() {

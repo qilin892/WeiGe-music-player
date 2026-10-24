@@ -1,6 +1,7 @@
 package com.weige.music
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -8,6 +9,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -17,9 +21,14 @@ import com.weige.music.ui.WeigeTheme
 
 class MainActivity : ComponentActivity() {
 
+    /** 通知栏点进来要打开的标记，热启动走 onNewIntent，冷启动走 onCreate */
+    private var openPlayer by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        openPlayer = intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true
 
         MusicSource.init(this)
 
@@ -48,9 +57,27 @@ class MainActivity : ComponentActivity() {
                     PlayerController.connect(this@MainActivity)
                 }
 
+                // 从通知栏点进来的：直接落到播放页。
+                // 冷启动时 MediaController 还没连上、state.song 为空，
+                // 这里只置位；AppRoot 的判断是 showPlayer && song != null，
+                // 等连接完成 song 就位，播放页自然盖上来。
+                LaunchedEffect(openPlayer) {
+                    if (openPlayer) {
+                        vm.showPlayer = true
+                        openPlayer = false
+                    }
+                }
+
                 AppRoot(vm)
             }
         }
+    }
+
+    /** 已经在运行时从通知栏点进来（singleTop，不会重走 onCreate） */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_PLAYER, false)) openPlayer = true
     }
 
     /** Android 13+ 不申请这个权限，媒体通知就不显示（播放本身不受影响） */
@@ -66,5 +93,6 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val REQ_NOTIFICATION = 1001
+        const val EXTRA_OPEN_PLAYER = "openPlayer"
     }
 }

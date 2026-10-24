@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">伟哥音乐</string>
+    <string name="notif_channel_playback">播放控制</string>
+    <string name="notif_channel_playback_desc">正在播放的歌曲与播放控制</string>
 </resources>

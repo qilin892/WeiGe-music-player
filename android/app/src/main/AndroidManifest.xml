@@ -37,6 +37,17 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- 分享下载好的音频：把私有文件以 content:// 授权给微信等外部 App -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.weige.music.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

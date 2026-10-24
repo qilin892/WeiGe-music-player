@@ -1,5 +1,8 @@
 package com.weige.music.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,10 +23,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.weige.music.model.LyricLine
+import com.weige.music.model.PlayMode
 import com.weige.music.model.Quality
 import com.weige.music.play.PlayState
 
@@ -69,6 +78,12 @@ fun PlayerScreen(
     favorite: Boolean = false,
     onToggleFavorite: () -> Unit = {},
     lyricLoading: Boolean = false,
+    downloading: Boolean = false,
+    downloadProgress: Int = 0,
+    downloaded: Boolean = false,
+    onDownload: () -> Unit = {},
+    playMode: PlayMode = PlayMode.SEQUENCE,
+    onCyclePlayMode: () -> Unit = {},
 ) {
     val song = state.song
 
@@ -104,6 +119,26 @@ fun PlayerScreen(
                     tint = if (favorite) Palette.Accent else Palette.Text2,
                     modifier = Modifier.size(21.dp),
                 )
+            }
+            // 下载 / 分享共用一格：没下过点一下下载，下过了点一下拉起系统分享
+            if (downloading) {
+                Box(Modifier.size(38.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        progress = { downloadProgress / 100f },
+                        color = Palette.Accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+            } else {
+                IconButton(onClick = onDownload, modifier = Modifier.size(38.dp)) {
+                    Icon(
+                        imageVector = if (downloaded) Icons.Rounded.Share else Icons.Rounded.Download,
+                        contentDescription = if (downloaded) "分享" else "下载",
+                        tint = if (downloaded) Palette.Ok else Palette.Text2,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
             AddToPlaylistButton(onClick = onAddToPlaylist)
             QualityChips(state.quality, onQuality)
@@ -177,12 +212,28 @@ fun PlayerScreen(
 
         Spacer(Modifier.height(6.dp))
 
-        // 控制：上一首 / 播放暂停 / 下一首
+        // 控制：播放模式 / 上一首 / 播放暂停 / 下一首
         Row(
             Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 左侧：播放模式，点一下顺序 → 单曲 → 随机
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                IconButton(onClick = onCyclePlayMode, modifier = Modifier.size(44.dp)) {
+                    Icon(
+                        imageVector = when (playMode) {
+                            PlayMode.SEQUENCE -> Icons.Rounded.Repeat
+                            PlayMode.LOOP_ONE -> Icons.Rounded.RepeatOne
+                            PlayMode.SHUFFLE -> Icons.Rounded.Shuffle
+                        },
+                        contentDescription = playMode.label,
+                        // 顺序是默认态，压暗一点；单曲/随机是主动选择，用强调色
+                        tint = if (playMode == PlayMode.SEQUENCE) Palette.Text3 else Palette.Accent,
+                        modifier = Modifier.size(21.dp),
+                    )
+                }
+            }
+
             IconButton(onClick = onPrevious, modifier = Modifier.size(52.dp)) {
                 Icon(
                     imageVector = Icons.Rounded.SkipPrevious,
@@ -225,6 +276,9 @@ fun PlayerScreen(
                     modifier = Modifier.size(30.dp),
                 )
             }
+
+            // 右侧留等宽空位，让中间三个键保持居中
+            Spacer(Modifier.weight(1f))
         }
 
         Spacer(Modifier.height(10.dp))
@@ -260,7 +314,16 @@ private fun Progress(state: PlayState, onSeek: (Long) -> Unit) {
     var dragValue by remember { mutableFloatStateOf(0f) }
 
     val duration = state.durationMs.coerceAtLeast(1L)
-    val value = if (dragging) dragValue else (state.positionMs.toFloat() / duration).coerceIn(0f, 1f)
+    val raw = (state.positionMs.toFloat() / duration).coerceIn(0f, 1f)
+
+    // 位置是 200ms 轮询来的，直接绑给 Slider 会看到一格一格的阶梯，
+    // 和歌词换句叠在一起就像在闪。补一段等长线性补间，视觉上是连续滚动。
+    val smooth by animateFloatAsState(
+        targetValue = raw,
+        animationSpec = tween(durationMillis = 220, easing = LinearEasing),
+        label = "progress",
+    )
+    val value = if (dragging) dragValue else smooth
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp)) {
         Slider(

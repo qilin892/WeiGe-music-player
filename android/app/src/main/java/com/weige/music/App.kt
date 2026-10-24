@@ -82,6 +82,16 @@ fun AppRoot(vm: AppViewModel) {
                     favorite = state.song?.let { vm.isFavorite(it) } == true,
                     onToggleFavorite = { state.song?.let { vm.toggleFavorite(it) } },
                     lyricLoading = vm.lyricLoading,
+                    downloading = vm.downloadingId == state.song?.id,
+                    downloadProgress = vm.downloadProgress,
+                    downloaded = state.song?.let { vm.isDownloaded(it) } == true,
+                    onDownload = {
+                        state.song?.let { song ->
+                            if (vm.isDownloaded(song)) vm.shareDownload(song) else vm.download(song)
+                        }
+                    },
+                    playMode = vm.playMode,
+                    onCyclePlayMode = { vm.cyclePlayMode() },
                 )
             } else if (openList != null) {
                 PlaylistDetailScreen(

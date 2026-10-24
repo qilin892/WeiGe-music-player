@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 能共享出去的目录；下载走的是外部私有目录的 Music/ -->
+<paths>
+    <external-files-path name="music" path="Music/" />
+</paths>
